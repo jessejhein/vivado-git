@@ -3,6 +3,7 @@ use warnings;
 use strict;
 use Cwd qw(getcwd);
 use POSIX qw(WEXITSTATUS);
+use Config;
 
 open(RVV, '<', 'RepoVivadoVersion');
 my $VIVADO_VERSION = <RVV>; chomp $VIVADO_VERSION;
@@ -11,7 +12,29 @@ unless ($VIVADO_VERSION) {
 	printf "Unable to detect the Vivado version in use in this repository.\n";
 	exit(1);
 }
-if ($ENV{PATH} !~ m!/Vivado/\Q$VIVADO_VERSION\E(/\.)?/bin!) {
+
+#Find the Vivado executable, per system we are on
+#Need to manually search PATH as cygwin doesn't find it always after the Vivado
+#setup script is run (adds path components in Windows form, but doesn't run
+#if translated to cygwin form.)
+my $VIVADO = undef;
+if ($Config{osname} =~ /cygwin/)
+{
+    $VIVADO = cygwin_find_in_path('vivado');
+}
+elsif ($Config{osname} =~ /MSWin/)
+{
+    $VIVADO = windows_find_in_path('vivado');
+}
+else
+{
+    my $viv_temp = `which vivado`;
+    chomp $viv_temp;
+    $VIVADO = $viv_temp if $? == 0;
+}
+
+#if ($VIVADO !~ m!/[/\\]\Q$VIVADO_VERSION\E[/\\]!) {
+if ($VIVADO !~ m!/\Q$VIVADO_VERSION\E!) {
 	printf "You are not running Vivado $VIVADO_VERSION or have not sourced the environment initialization scripts.  Aborting.\n";
 	exit(1);
 }
@@ -55,7 +78,7 @@ while (my $ProjectCanonicalName = <PROJECTLIST>) {
 	printf "~~~ Processing Project: %s\n", $ProjectCanonicalName;
 	printf "~~~\n";
 	printf "~~~ Sourcing Project TCL in Vivado\n";
-	system('vivado', '-mode', 'batch', '-nojournal', '-nolog', '-source', sprintf("sources/%s.tcl", $ProjectCanonicalName));
+	system($VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', sprintf("sources/%s.tcl", $ProjectCanonicalName));
 	if (WEXITSTATUS($?)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Severity => 'CRITICAL ERROR', Message => sprintf("Vivado exited with an unexpected status code after project regeneration: %s.  Aborting.  The project has NOT necessarily been safely or fully created!", WEXITSTATUS($?)) };
 	}
@@ -124,4 +147,70 @@ if (grep { $_ } values %MessageTotals) {
 }
 else {
 	printf "~~~ No issues encountered.  Projects generated and ready to use.\n";
+}
+
+sub cygwin_find_in_path {
+    my ($executable) = @_;
+
+    my @split_paths = split(/(?<!:[A-Za-z]):/,$ENV{PATH});
+    
+    #If the first directory in the path is in windows form, it will be incorrectly split
+    if (($split_paths[0] =~ /^[A-Za-z]$/)&&($split_paths[1] =~ /^\\/)) {
+        my $temp0 = shift @split_paths;
+        my $temp1 = shift @split_paths;
+
+        unshift @split_paths, ($temp0 . ":" . $temp1);
+    }
+
+    my @fix_paths = map { my $n = `cygpath --unix "$_"`; chomp $n; $n } @split_paths;
+    
+    foreach my $p (@fix_paths) {
+        my $tp = "$p/$executable";
+        if (-X $tp) {
+            return $tp;
+            last;
+        }
+    }
+
+    return undef;
+}
+
+sub windows_find_in_path {
+    my ($executable) = @_;
+
+    my @endings = ("exe", "bat", "com");
+
+    my $need_endings = 1;
+
+    for my $ending (@endings) {
+       if ($executable =~ /\.$ending$/i) {
+           $need_endings = 0;
+       }
+    }
+
+
+    my @split_paths = split(/;/,$ENV{PATH});
+    
+    foreach my $p (@split_paths) {
+        my $tp;
+        
+        if (!$need_endings) {
+            $tp = "$p\\$executable";
+            if (-X $tp) {
+                return $tp;
+                last;
+            }
+        }
+        else {
+            foreach my $ending (@endings) {
+                $tp = "$p\\$executable.$ending";
+                if (-X $tp) {
+                    return $tp;
+                    last;
+                }
+            }
+        }
+    }
+
+    return undef;
 }
