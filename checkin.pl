@@ -6,7 +6,10 @@ use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
 
-# Get the Vivado version from user supplied RepovivadoVersion file
+our $DEBUG = 1;
+our $SAVE_RAW_TCL = 0;
+
+# Get the Vivado version from user supplied RepoVivadoVersion file
 open(RVV, '<', 'RepoVivadoVersion');
 my $VIVADO_VERSION = <RVV>; chomp $VIVADO_VERSION;
 close(RVV);
@@ -23,6 +26,9 @@ my $VIVADO = undef;
 if ($Config{osname} =~ /cygwin/)
 {
     $VIVADO = cygwin_find_in_path('vivado');
+    $VIVADO = `cygpath --windows $VIVADO`;
+    chomp $VIVADO;
+    printf "CYGWIN VIVADO = %s\n", $VIVADO if $DEBUG;
 }
 elsif ($Config{osname} =~ /MSWin/)
 {
@@ -36,13 +42,10 @@ else
 }
 
 #if ($VIVADO !~ m!/[/\\]\Q$VIVADO_VERSION\E[/\\]!) {
-if ($VIVADO !~ m!/\Q$VIVADO_VERSION\E!) {
+if ($VIVADO !~ m!\Q$VIVADO_VERSION\E!) {
 	printf "You are not running Vivado $VIVADO_VERSION or have not sourced the environment initialization scripts.  Aborting.\n";
 	exit(1);
 }
-
-our $DEBUG = 0;
-our $SAVE_RAW_TCL = 0;
 
 my %MESSAGES;
 my %PROJECT_REPO_DEPS;
@@ -64,19 +67,33 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	printf "~~~ Processing Project: %s\n", $ProjectCanonicalName;
 	printf "~~~\n";
 	printf "~~~ Exporting Project TCL from Vivado\n";
-	open(VIVADO, '|-', $VIVADO, '-nojournal', '-nolog', '-mode', 'tcl', $ProjectPath);
+	open(VIVADO, "> .temp.tcl");
 	printf VIVADO "write_project_tcl -force \".exported.tcl\"\n";
-
 	printf VIVADO "foreach {bd_file} [get_files -filter {FILE_TYPE == \"Block Designs\"}] {\n";
-	printf VIVADO "	open_bd_design \$bd_file\n";
-	printf VIVADO "	write_bd_tcl \"%s/[file rootname [file tail \$bd_file]].tcl\"\n", $SourcesBdDir;
-	printf VIVADO "	close_bd_design [file rootname [file tail \$bd_file]]\n";
+	printf VIVADO "	puts \"\$bd_file\"\n";
+	printf VIVADO "	open_bd_design \"\$bd_file\"\n";
+	printf VIVADO "	puts \"OPENED\"\n";
+	printf VIVADO "	write_bd_tcl \"%s/[file rootname [file tail \\\"\$bd_file\\\"]].tcl\"\n", $SourcesBdDir;
+	printf VIVADO "	puts \"WROTE\"\n";
+	printf VIVADO "	close_bd_design [file rootname [file tail \"\$bd_file\"]]\n";
+	printf VIVADO "	puts \"CLOSED\"\n";
 	printf VIVADO "}\n";
 	close(VIVADO);
+        my @cmd = ($VIVADO, '-nojournal', '-nolog', '-mode', 'batch', '-source', '.temp.tcl', $ProjectPath);
+        if ($Config{osname} =~ /cygwin/) {
+            # Cygwin has problems starting vivado on another drive for some reason
+            # Force to run through CMD, which doesn't seem to hcave the problem
+            unshift @cmd, "cmd", '/c';
+        }
+        printf "~~~~~~ CMD: %s\n", join(" ",@cmd);
+	system(@cmd);
+
+	
 
 	if (WEXITSTATUS($?)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 1, Severity => 'CRITICAL ERROR', Message => sprintf("Vivado exited with an unexpected status code after project export: %s.  Aborting.  The project has NOT been exported or updated!", WEXITSTATUS($?)) };
 		unlink('.exported.tcl');
+		unlink('.temp.tcl') unless $DEBUG;
 		next;
 	}
 	printf "\n";
@@ -86,6 +103,7 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	rename('.exported.tcl', sprintf("sources/%s.tcl.raw", $ProjectCanonicalName)) if ($DEBUG || $SAVE_RAW_TCL);
 	unlink('.processed.tcl');
 	unlink('.exported.tcl');
+	unlink('.temp.tcl');
 
 	printf "\n";
 	printf "~~~\n";
@@ -660,8 +678,8 @@ sub windows_find_in_path {
 
     my @endings = ("exe", "bat", "com");
 
+    # Only need to search endings if one isn't specified
     my $need_endings = 1;
-
     for my $ending (@endings) {
        if ($executable =~ /\.$ending$/i) {
            $need_endings = 0;

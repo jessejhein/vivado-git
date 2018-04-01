@@ -21,6 +21,8 @@ my $VIVADO = undef;
 if ($Config{osname} =~ /cygwin/)
 {
     $VIVADO = cygwin_find_in_path('vivado');
+    $VIVADO = `cygpath --windows $VIVADO`;
+    chomp $VIVADO;
 }
 elsif ($Config{osname} =~ /MSWin/)
 {
@@ -33,7 +35,6 @@ else
     $VIVADO = $viv_temp if $? == 0;
 }
 
-#if ($VIVADO !~ m!/[/\\]\Q$VIVADO_VERSION\E[/\\]!) {
 if ($VIVADO !~ m!/\Q$VIVADO_VERSION\E!) {
 	printf "You are not running Vivado $VIVADO_VERSION or have not sourced the environment initialization scripts.  Aborting.\n";
 	exit(1);
@@ -74,11 +75,20 @@ while (my $ProjectCanonicalName = <PROJECTLIST>) {
 	my $ProjectDir = sprintf("%s/workspace/%s", getcwd(), $ProjectCanonicalName);
 	$MESSAGES{$ProjectCanonicalName} = [];
 
+        my @cmd; # For running VIVADO
+
 	printf "~"x80 ."\n";
 	printf "~~~ Processing Project: %s\n", $ProjectCanonicalName;
 	printf "~~~\n";
 	printf "~~~ Sourcing Project TCL in Vivado\n";
-	system($VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', sprintf("sources/%s.tcl", $ProjectCanonicalName));
+	@cmd = ($VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', sprintf("sources/%s.tcl", $ProjectCanonicalName));
+        if ($Config{osname} =~ /cygwin/) {
+            # Cygwin has problems starting vivado on another drive for some reason
+            # Force to run through CMD, which doesn't seem to hcave the problem
+            unshift @cmd, "cmd", '/c';
+        }
+        system(@cmd);
+
 	if (WEXITSTATUS($?)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Severity => 'CRITICAL ERROR', Message => sprintf("Vivado exited with an unexpected status code after project regeneration: %s.  Aborting.  The project has NOT necessarily been safely or fully created!", WEXITSTATUS($?)) };
 	}
@@ -100,7 +110,13 @@ while (my $ProjectCanonicalName = <PROJECTLIST>) {
 		my $InitScript = sprintf("initscripts/%s.tcl", $ProjectCanonicalName);
 		if (-f $InitScript) { 
 			printf "~~~ Running %s\n", $InitScript;
-			system('vivado', '-mode', 'batch', '-nojournal', '-nolog', '-source', $InitScript, sprintf("%s/%s.xpr", $ProjectDir, $ProjectCanonicalName));
+			@cmd = $VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', $InitScript, sprintf("%s/%s.xpr", $ProjectDir, $ProjectCanonicalName));
+                        if ($Config{osname} =~ /cygwin/) {
+                            # Cygwin has problems starting vivado on another drive for some reason
+                            # Force to run through CMD, which doesn't seem to hcave the problem
+                            unshift @cmd, "cmd", '/c';
+                        }
+                        system(@cmd);
 			if (WEXITSTATUS($?)) {
 				push @{$MESSAGES{$ProjectCanonicalName}}, { Severity => 'WARNING', Message => sprintf("Project initialization script %s exited with nonzero status: %s!", $InitScript, WEXITSTATUS($?)) };
 			}
