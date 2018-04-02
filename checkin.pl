@@ -6,7 +6,7 @@ use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
 
-our $DEBUG = 1;
+our $DEBUG = 0;
 our $SAVE_RAW_TCL = 0;
 
 our $PATH_MATCH_PREFIX = '[^ /]+';
@@ -100,7 +100,7 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
             # Force to run through CMD, which doesn't seem to hcave the problem
             unshift @cmd, "cmd", '/c';
         }
-        printf "~~~~~~ CMD: %s\n", join(" ",@cmd);
+        printf "~~~~~~ CMD: %s\n", join(" ",@cmd) if $DEBUG;
 	system(@cmd);
 
 	
