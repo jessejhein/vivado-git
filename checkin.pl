@@ -35,9 +35,9 @@ if ($Config{osname} =~ /cygwin/)
     printf "CYGWIN VIVADO = %s\n", $VIVADO if $DEBUG;
 
     #Change the tcl path matchers for the different seperator
-    $PATH_MATCH_PREFIX =~ s!/!\\!g;
-    $PATH_MATCH_BD =~ s!/!\\!g;
-    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\!g;
+    $PATH_MATCH_PREFIX =~ s!/!\\\\!g;
+    $PATH_MATCH_BD =~ s!/!\\\\!g;
+    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\\\!g;
     
 }
 elsif ($Config{osname} =~ /MSWin/)
@@ -45,9 +45,9 @@ elsif ($Config{osname} =~ /MSWin/)
     $VIVADO = windows_find_in_path('vivado');
 
     #Change the tcl path matchers for the different seperator
-    $PATH_MATCH_PREFIX =~ s!/!\\!g;
-    $PATH_MATCH_BD =~ s!/!\\!g;
-    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\!g;
+    $PATH_MATCH_PREFIX =~ s!/!\\\\!g;
+    $PATH_MATCH_BD =~ s!/!\\\\!g;
+    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\\\!g;
 }
 else
 {
@@ -259,10 +259,9 @@ sub process_tcl {
 
 		if (($FileListing == 0 && $Line =~ /^# 2\. The following source\(s\) files that were local or imported into the original project/)...($Line =~ /^\s*$/)) {
 			$FileListing = 1;
-
-			if ($Line =~ /^#\s+"(.*)"$/) {
+			if ($Line =~ /^#\s+\"(.*)\"\r?$/) {
 				my $RawFile = $1;
-				my $File = get_path($RawFile, 1, $ProjectCanonicalName, 0, undef);
+				my $File = get_path(cygwin_abs_path($RawFile), 1, $ProjectCanonicalName, 0, undef);
 
 				if ($File =~ m!${PATH_MATCH_BD}\$!) {
 					push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'INFO', Message => sprintf("Discarding source file (Block Designs exported separately): %s", $File) };
@@ -270,7 +269,7 @@ sub process_tcl {
 				elsif ($File =~ m!${PATH_MATCH_BD_WRAPPER}\$!) {
 					push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'INFO', Message => sprintf("Discarding source file (Block Design auto-wrapper will be regenerated): %s", $File) };
 					push @Discarded_BD_Wrappers, $1;
-					$SourcesIndex{my_abs_path($File)} = undef;
+					$SourcesIndex{cygwin_abs_path($File)} = undef;
 				}
 				else {
 					my $Target = get_path($RawFile, 1, $ProjectCanonicalName, 1, undef);
@@ -279,7 +278,7 @@ sub process_tcl {
 					}
 					else {
 						if ($File ne $Target) {
-							if (exists($TargetsIndex{abs_path($Target)}) && $TargetsIndex{abs_path($Target)} != abs_path($File)) {
+							if (exists($TargetsIndex{$Target}) && $TargetsIndex{$Target} != $File) {
 								$Target = get_new_file_target($Target);
 								push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 1, Severity => 'CRITICAL WARNING', Message => sprintf("DUPLICATE TARGET FILE in repository sources: \"%s\" is being remapped to \"%s\" in violation of the pattern.  The scripts MAY not perfectly handle this case through future iterations of checkin.  Be attentive!", $File, $Target) };
 							}
@@ -292,8 +291,8 @@ sub process_tcl {
 						}
 
 						push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'DEBUG INFO', Message => sprintf("Registering Target: %s", $Target) } if ($DEBUG);
-						$SourcesIndex{abs_path($File)} = abs_path($Target);
-						$TargetsIndex{abs_path($Target)} = abs_path($File);
+						$SourcesIndex{$File} = $Target;
+						$TargetsIndex{$Target} = $File;
 					}
 				}
 			}
@@ -492,7 +491,6 @@ sub process_tcl {
 	open(FIND, '-|', 'find', sprintf('sources/%s', $ProjectCanonicalName), '-type', 'f');
 	while (my $File = <FIND>) {
 		chomp $File;
-		$File = abs_path($File);
 		unlink($File) unless (exists($TargetsIndex{$File}));
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'DEBUG WARNING', Message => sprintf("Unlinked \"%s\".", $File) } if ($DEBUG && !exists($TargetsIndex{$File}));
 	}
@@ -567,7 +565,7 @@ sub get_path {
 
 	my $OrigPath = $Path;
 	$Path = _get_path_update_for_xcix($Path) if defined($Path);
-	$Path = my_abs_path($Path);
+	$Path = abs_path($Path);
 	if (!defined($Path) || ! -e($Path)) {
 		if (defined $SourcesIndex) {
 			foreach my $SourcePath (keys %$SourcesIndex) {
@@ -733,12 +731,12 @@ sub windows_find_in_path {
     return undef;
 }
 
-sub my_abs_path {
+sub cygwin_abs_path {
     my ($in_path) = @_;
 
     if ($Config{osname} =~ /cygwin/) {
        return undef unless defined $in_path;
-       my $out_path = `cygpath --absolute $in_path`;
+       my $out_path = `cygpath --absolute "$in_path"`;
        if ($? != 0) {
            die "Couldn't get absolute path of $in_path:\n$out_path";
        }

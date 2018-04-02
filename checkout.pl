@@ -35,7 +35,7 @@ else
     $VIVADO = $viv_temp if $? == 0;
 }
 
-if ($VIVADO !~ m!/\Q$VIVADO_VERSION\E!) {
+if ($VIVADO !~ m!\Q$VIVADO_VERSION\E!) {
 	printf "You are not running Vivado $VIVADO_VERSION or have not sourced the environment initialization scripts.  Aborting.\n";
 	exit(1);
 }
@@ -110,7 +110,7 @@ while (my $ProjectCanonicalName = <PROJECTLIST>) {
 		my $InitScript = sprintf("initscripts/%s.tcl", $ProjectCanonicalName);
 		if (-f $InitScript) { 
 			printf "~~~ Running %s\n", $InitScript;
-			@cmd = $VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', $InitScript, sprintf("%s/%s.xpr", $ProjectDir, $ProjectCanonicalName));
+			@cmd = ($VIVADO, '-mode', 'batch', '-nojournal', '-nolog', '-source', $InitScript, sprintf("%s/%s.xpr", $ProjectDir, $ProjectCanonicalName));
                         if ($Config{osname} =~ /cygwin/) {
                             # Cygwin has problems starting vivado on another drive for some reason
                             # Force to run through CMD, which doesn't seem to hcave the problem
