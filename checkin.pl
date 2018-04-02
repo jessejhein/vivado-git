@@ -9,6 +9,10 @@ use Config;
 our $DEBUG = 1;
 our $SAVE_RAW_TCL = 0;
 
+our $PATH_MATCH_PREFIX = '[^ /]+';
+our $PATH_MATCH_BD = '\.srcs/[^ /]+/bd/([^ /]+)/\1.bd';
+our $PATH_MATCH_BD_WRAPPER  = '!\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?';
+
 # Get the Vivado version from user supplied RepoVivadoVersion file
 open(RVV, '<', 'RepoVivadoVersion');
 my $VIVADO_VERSION = <RVV>; chomp $VIVADO_VERSION;
@@ -29,10 +33,21 @@ if ($Config{osname} =~ /cygwin/)
     $VIVADO = `cygpath --windows $VIVADO`;
     chomp $VIVADO;
     printf "CYGWIN VIVADO = %s\n", $VIVADO if $DEBUG;
+
+    #Change the tcl path matchers for the different seperator
+    $PATH_MATCH_PREFIX =~ s!/!\\!g;
+    $PATH_MATCH_BD =~ s!/!\\!g;
+    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\!g;
+    
 }
 elsif ($Config{osname} =~ /MSWin/)
 {
     $VIVADO = windows_find_in_path('vivado');
+
+    #Change the tcl path matchers for the different seperator
+    $PATH_MATCH_PREFIX =~ s!/!\\!g;
+    $PATH_MATCH_BD =~ s!/!\\!g;
+    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\!g;
 }
 else
 {
@@ -249,13 +264,13 @@ sub process_tcl {
 				my $RawFile = $1;
 				my $File = get_path($RawFile, 1, $ProjectCanonicalName, 0, undef);
 
-				if ($File =~ m!\.srcs/[^ /]+/bd/([^ /]+)/\1.bd$!) {
+				if ($File =~ m!${PATH_MATCH_BD}\$!) {
 					push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'INFO', Message => sprintf("Discarding source file (Block Designs exported separately): %s", $File) };
 				}
-				elsif ($File =~ m!\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?$!) {
+				elsif ($File =~ m!${PATH_MATCH_BD_WRAPPER}\$!) {
 					push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'INFO', Message => sprintf("Discarding source file (Block Design auto-wrapper will be regenerated): %s", $File) };
 					push @Discarded_BD_Wrappers, $1;
-					$SourcesIndex{abs_path($File)} = undef;
+					$SourcesIndex{my_abs_path($File)} = undef;
 				}
 				else {
 					my $Target = get_path($RawFile, 1, $ProjectCanonicalName, 1, undef);
@@ -289,10 +304,10 @@ sub process_tcl {
 		}
 		if ($FileList_State) {
 			if ($Line =~ /^\s*$/) {
-				$FileList_State = 0; # Reset state, we are finished.
+				$FileList_State = 0; # Reset state, we are finished.:1
 			}
-			elsif ($Line =~ m![^ /]+\.srcs/[^ /]+/bd/([^ /]+)/\1.bd"! ||
-				$Line =~ m![^ /]+\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?"!) {
+			elsif ($Line =~ m!${PATH_MATCH_PREFIX}${PATH_MATCH_BD}"! ||
+				$Line =~ m!${PATH_MATCH_PREFIX}${PATH_MATCH_BD_WRAPPER}"!) {
 				$KeepLine = 0;
 			}
 			elsif ($Line =~ /^\s+"\[file normalize "(.*)"\]"\\$/) {
@@ -536,18 +551,23 @@ sub _get_path_update_for_xcix {
 }
 
 sub get_path {
-	my $Path = shift;
+	my $Path = shift; 
 	my $Relative = shift;
 	my $Project = shift;
 	my $TargetSources = shift;
 	my $SourcesIndex = shift;
 
-	$Path =~ s/\$origin_dir\//.\//;
-	$Path =~ s/\$proj_dir\//workspace\/$Project\//;
+        printf "get_path in: \"%s\"",$Path if $DEBUG;
+
+	$Path =~ s!\$origin_dir/!./!;
+	$Path =~ s!\$proj_dir/!workspace/$Project/!;
+	$Path =~ s!\$\{project_name}!$Project!;
+
+        printf " =>  \"%s\"\n",$Path if $DEBUG;
 
 	my $OrigPath = $Path;
 	$Path = _get_path_update_for_xcix($Path) if defined($Path);
-	$Path = abs_path($Path);
+	$Path = my_abs_path($Path);
 	if (!defined($Path) || ! -e($Path)) {
 		if (defined $SourcesIndex) {
 			foreach my $SourcePath (keys %$SourcesIndex) {
@@ -711,4 +731,21 @@ sub windows_find_in_path {
     }
 
     return undef;
+}
+
+sub my_abs_path {
+    my ($in_path) = @_;
+
+    if ($Config{osname} =~ /cygwin/) {
+       return undef unless defined $in_path;
+       my $out_path = `cygpath --absolute $in_path`;
+       if ($? != 0) {
+           die "Couldn't get absolute path of $in_path:\n$out_path";
+       }
+       chomp $out_path;
+       return $out_path;
+    }
+    else {
+        return Cwd::abs_path($in_path);
+    }
 }
