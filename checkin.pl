@@ -6,7 +6,7 @@ use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
 
-our $DEBUG = 0;
+our $DEBUG = 1;
 our $SAVE_RAW_TCL = 0;
 
 our $PATH_MATCH_PREFIX = '[^ /]+';
