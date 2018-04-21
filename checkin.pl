@@ -6,7 +6,7 @@ use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
 
-our $DEBUG = 1;
+our $DEBUG = 0;
 our $SAVE_RAW_TCL = 0;
 
 our $PATH_MATCH_PREFIX = '[^ /]+';
@@ -555,17 +555,15 @@ sub get_path {
 	my $TargetSources = shift;
 	my $SourcesIndex = shift;
 
-        printf "get_path in: \"%s\"",$Path if $DEBUG;
-
+	printf("~~~~~ get_path in %s",$Path) if $DEBUG;
 	$Path =~ s!\$origin_dir/!./!;
 	$Path =~ s!\$proj_dir/!workspace/$Project/!;
-	$Path =~ s!\$\{project_name}!$Project!;
-
-        printf " =>  \"%s\"\n",$Path if $DEBUG;
+	$Path =~ s!\$\{?project_name}?!$Project!;
 
 	my $OrigPath = $Path;
 	$Path = _get_path_update_for_xcix($Path) if defined($Path);
 	$Path = abs_path($Path);
+	printf(" ==> out %s\n",$Path) if $DEBUG;
 	if (!defined($Path) || ! -e($Path)) {
 		if (defined $SourcesIndex) {
 			foreach my $SourcePath (keys %$SourcesIndex) {
