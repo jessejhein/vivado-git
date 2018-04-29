@@ -6,9 +6,11 @@ use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
 
+# Globals for debuggin purposes
 our $DEBUG = 0;
 our $SAVE_RAW_TCL = 0;
 
+# Globals for path matching
 our $PATH_MATCH_PREFIX = '[^ /]+';
 our $PATH_MATCH_BD = '\.srcs/[^ /]+/bd/([^ /]+)/\1.bd';
 our $PATH_MATCH_BD_WRAPPER  = '!\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?';
@@ -33,21 +35,10 @@ if ($Config{osname} =~ /cygwin/)
     $VIVADO = `cygpath --windows $VIVADO`;
     chomp $VIVADO;
     printf "CYGWIN VIVADO = %s\n", $VIVADO if $DEBUG;
-
-    #Change the tcl path matchers for the different seperator
-    $PATH_MATCH_PREFIX =~ s!/!\\\\!g;
-    $PATH_MATCH_BD =~ s!/!\\\\!g;
-    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\\\!g;
-    
 }
 elsif ($Config{osname} =~ /MSWin/)
 {
     $VIVADO = windows_find_in_path('vivado');
-
-    #Change the tcl path matchers for the different seperator
-    $PATH_MATCH_PREFIX =~ s!/!\\\\!g;
-    $PATH_MATCH_BD =~ s!/!\\\\!g;
-    $PATH_MATCH_BD_WRAPPER  =~ s!/!\\\\!g;
 }
 else
 {
@@ -56,7 +47,7 @@ else
     $VIVADO = $viv_temp if $? == 0;
 }
 
-#if ($VIVADO !~ m!/[/\\]\Q$VIVADO_VERSION\E[/\\]!) {
+# Check that the correct version of Vivado is running for the project.
 if ($VIVADO !~ m!\Q$VIVADO_VERSION\E!) {
 	printf "You are not running Vivado $VIVADO_VERSION or have not sourced the environment initialization scripts.  Aborting.\n";
 	exit(1);
@@ -65,7 +56,9 @@ if ($VIVADO !~ m!\Q$VIVADO_VERSION\E!) {
 my %MESSAGES;
 my %PROJECT_REPO_DEPS;
 
+# Loop over each project in the workspace
 for my $ProjectPath (glob("workspace/*/*.xpr")) {
+        # Set up some path names to use
 	next unless $ProjectPath =~ m!^workspace/([^/]+)/([^/]+)\.xpr$!;
 	my $ProjectFilename = $2;
 	my $ProjectCanonicalName = $1;
@@ -73,17 +66,24 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	my $ProjectDir = sprintf("%s/workspace/%s", getcwd(), $ProjectCanonicalName);
 	$MESSAGES{$ProjectCanonicalName} = [];
 
+        # Make a sources directory (if it exists, nothing changes),i
+        # the project directory in the sources, and a block design directory
 	mkdir('sources');
 	mkdir(sprintf("sources/%s", $ProjectCanonicalName));
 	mkdir($SourcesBdDir);
-	unlink(glob("$SourcesBdDir/*"));
+	unlink(glob("$SourcesBdDir/*")); # Clean any block designs that already exist
 
+        # Now create a TCL file to export the design and the block design tcls
 	printf "~"x80 ."\n";
 	printf "~~~ Processing Project: %s\n", $ProjectCanonicalName;
 	printf "~~~\n";
 	printf "~~~ Exporting Project TCL from Vivado\n";
 	open(VIVADO, "> .temp.tcl");
+        # Write the main TCL design, no block designs included.
+        # This goes to an intermediate file to process later.
 	printf VIVADO "write_project_tcl -force \".exported.tcl\"\n";
+        # Loop through the block designs and write them out.
+        # These go directly to the BD directory
 	printf VIVADO "foreach {bd_file} [get_files -filter {FILE_TYPE == \"Block Designs\"}] {\n";
 	printf VIVADO "	puts \"\$bd_file\"\n";
 	printf VIVADO "	open_bd_design \"\$bd_file\"\n";
@@ -94,16 +94,15 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	printf VIVADO "	puts \"CLOSED\"\n";
 	printf VIVADO "}\n";
 	close(VIVADO);
+        # Now run vivado, telling it to run the TCL script.
         my @cmd = ($VIVADO, '-nojournal', '-nolog', '-mode', 'batch', '-source', '.temp.tcl', $ProjectPath);
         if ($Config{osname} =~ /cygwin/) {
             # Cygwin has problems starting vivado on another drive for some reason
-            # Force to run through CMD, which doesn't seem to hcave the problem
+            # Force to run through CMD.EXE, which doesn't seem to have the problem
             unshift @cmd, "cmd", '/c';
         }
         printf "~~~~~~ CMD: %s\n", join(" ",@cmd) if $DEBUG;
 	system(@cmd);
-
-	
 
 	if (WEXITSTATUS($?)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 1, Severity => 'CRITICAL ERROR', Message => sprintf("Vivado exited with an unexpected status code after project export: %s.  Aborting.  The project has NOT been exported or updated!", WEXITSTATUS($?)) };
@@ -112,6 +111,9 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 		next;
 	}
 	printf "\n";
+
+        # Process the exported tcl, then copy/move the processed file into sources as the project creation TCL file.
+        # If the SAVE_RAW or DEBUG flags are set, save the original file as a .tcl.raw file for examination later
 	printf "~~~ Analyzing & Rewriting Project TCL and Copying source files\n";
 	process_tcl('.exported.tcl', '.processed.tcl', $ProjectCanonicalName, $ProjectDir);
 	rename('.processed.tcl', sprintf("sources/%s.tcl", $ProjectCanonicalName));
@@ -125,6 +127,7 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	printf "~~~ Finished processing project %s\n", $ProjectCanonicalName;
 	printf "~"x80 ."\n";
 
+        # Print out any messages we generated.
 	if (@{$MESSAGES{$ProjectCanonicalName}}) {
 		printf "~~~ MESSAGES FOR PROJECT %s\n", $ProjectCanonicalName;
 		printf "~~~\n";
@@ -140,23 +143,32 @@ for my $ProjectPath (glob("workspace/*/*.xpr")) {
 	printf "\n";
 }
 
+# Now, save off the workspace ip_repo
+# No processing is needed. Just rsync the directories
 if (-e 'workspace/ip_repo') {
 	printf "\n";
 	printf "~"x80 ."\n";
 	printf "~~~ COPYING IP_REPO\n";
 	printf "~~~\n";
 	system('rsync',
-		'-rhtci', '--del',
+		'--recursive',
+                '--hard-links',      # Preserve hard links
+                '--times',           # Preserve modification times
+                '--checksum',        # Skip based on checksum not time
+                '--ignore-times',    # don't skip files that match size and time
+                '--del',             # delete during the transfer
 		'workspace/ip_repo/',
 		'ip_repo_sources/');
 	printf "~~~\n";
 	printf "\n";
 }
 
+# Output a list of the projects
 open(DEPORDER, '>', 'projects.list');
 printf DEPORDER "%s\n", join "\n", process_deps(%PROJECT_REPO_DEPS);
 close(DEPORDER);
 
+# Print the messages and count hazard and severe ones
 my $Worry = 0;
 my %MessageTotals;
 for my $ProjectCanonicalName (keys %MESSAGES) {
@@ -178,6 +190,8 @@ for my $ProjectCanonicalName (keys %MESSAGES) {
 		printf "~~~\n";
 	}
 }
+
+#Show the current git status and some information warnings if any severe ones were printed
 if (grep { $_ } values %MessageTotals) {
 	printf "~"x80 ."\n";
 	printf "\n";
@@ -199,6 +213,15 @@ else {
 	exit(0);
 }
 
+############################################################################
+# Subroutines
+############################################################################
+
+# Process the TCL file for the project.
+# This looks files it says it requires and copies them to the sources dir
+# The exception is the BD and BD wrapper files, which are then removed.
+# Then we source in the BD creation scripts exported earlier and have 
+# Vivado create new wrapper files. This makes Vivado then maintain them.
 sub process_tcl {
 	my $TclInFile = shift;
 	my $TclOutFile = shift;
@@ -207,11 +230,14 @@ sub process_tcl {
 
 	$PROJECT_REPO_DEPS{$ProjectCanonicalName} = [];
 
+        # Open an output file for the processed output
 	if (!open(TCLOUT, '>', $TclOutFile)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 1, Severity => 'CRITICAL ERROR', Message => sprintf("Unable to open intermediate file \"%s\".  Aborting.  The project has NOT been exported or updated!", $TclOutFile) };
 		unlink($TclOutFile);
 		return;
 	}
+
+        # Open the original script
 	if (!open(TCLIN, '<', $TclInFile)) {
 		push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 1, Severity => 'CRITICAL ERROR', Message => sprintf("Unable to open intermediate file \"%s\".  Aborting.  The project has NOT been exported or updated!", $TclInFile) };
 		close(TCLOUT);
@@ -230,6 +256,8 @@ sub process_tcl {
 	my $FileList_State = 0;
 	my $FileProperty_Disarm = 0;
 	my $Current_SetFile = undef;
+
+        # Loop over the exported TCL
 	while (my $Line = <TCLIN>) {
 		my $KeepLine = 1;
 		my $PathSubstitute = 1;
@@ -246,18 +274,22 @@ sub process_tcl {
 		}
 
 		if ($Line =~ /^set orig_proj_dir /) {
+			# Point the project directory to the sources directory
 			$Line = sprintf('set orig_proj_dir "[file normalize "sources/%s"]"', $ProjectCanonicalName);
 		}
 
 		if ($Line =~ /^create_project /) {
+			# When the TCL file runs, create the project back in the workspace direcotry
 			$Line = sprintf('create_project %s workspace/%s', $ProjectCanonicalName, $ProjectCanonicalName);
 		}
 		
 		if ($Line =~ /^set obj \[get_projects \S+\]/) {
+			# Set the object of the properties to follow to this project (This makes sure the name is correct)
 			$Line = sprintf('set obj [get_projects %s]', $ProjectCanonicalName);
 		}
 
 		if (($FileListing == 0 && $Line =~ /^# 2\. The following source\(s\) files that were local or imported into the original project/)...($Line =~ /^\s*$/)) {
+			# These lines identify the files the TCL export identified as needed by the project. Save them!
 			$FileListing = 1;
 			if ($Line =~ /^#\s+\"(.*)\"\r?$/) {
 				my $RawFile = $1;
@@ -268,7 +300,7 @@ sub process_tcl {
 				}
 				elsif ($File =~ m!${PATH_MATCH_BD_WRAPPER}\$!) {
 					push @{$MESSAGES{$ProjectCanonicalName}}, { Line => __LINE__, Hazard => 0, Severity => 'INFO', Message => sprintf("Discarding source file (Block Design auto-wrapper will be regenerated): %s", $File) };
-					push @Discarded_BD_Wrappers, $1;
+					push @Discarded_BD_Wrappers, $1; # Save the name so we know what to recreate
 					$SourcesIndex{cygwin_abs_path($File)} = undef;
 				}
 				else {
@@ -303,9 +335,10 @@ sub process_tcl {
 		}
 		if ($FileList_State) {
 			if ($Line =~ /^\s*$/) {
-				$FileList_State = 0; # Reset state, we are finished.:1
+				$FileList_State = 0; # Reset state, we are finished.
 			}
 			elsif ($Line =~ m!${PATH_MATCH_PREFIX}${PATH_MATCH_BD}"! ||
+				# Again, don't keep the wrapper file
 				$Line =~ m!${PATH_MATCH_PREFIX}${PATH_MATCH_BD_WRAPPER}"!) {
 				$KeepLine = 0;
 			}
@@ -461,6 +494,7 @@ sub process_tcl {
 		printf TCLOUT "%s\n", $Line if $KeepLine;
 	}
 
+        # Find any component.xml file, and process it
 	printf "\n";
 	printf "~~~ Updating any component.xml files\n";
 
@@ -485,6 +519,8 @@ sub process_tcl {
 	}
 	close(FINDXML);
 
+	
+	# Remove any files in sources that weren't used. (Indicating that the files were removed.)
 	printf "\n";
 	printf "~~~ Purging unused sources\n";
 
@@ -497,6 +533,7 @@ sub process_tcl {
 	close(FIND);
 	system('find', sprintf('sources/%s', $ProjectCanonicalName), '-depth', '-type', 'd', '-exec', 'rmdir', '--ignore-fail-on-non-empty', '{}', ';');
 }
+
 sub process_componentxml {
 	my $XML_In = shift;
 	my $XML_Out = shift;
