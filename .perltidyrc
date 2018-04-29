@@ -1,0 +1,11 @@
+-nst
+--maximum-line-length=77
+--vertical-tightness=2
+--line-up-parentheses
+--closing-token-indentation=1
+#--opening-brace-on-new-line
+-nasbl
+--want-break-before="% + - * / x != == >= <= =~ !~ < > | & = **= += *= &= <<= &&= -= /= |= >>= ||= //= .= %= ^= x="
+--nooutdent-long-lines
+--closing-side-comments
+--closing-side-comment-interval=12
