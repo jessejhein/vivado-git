@@ -5,6 +5,7 @@ use Cwd qw(getcwd abs_path);
 use File::Spec;
 use POSIX qw(WEXITSTATUS);
 use Config;
+use Carp;
 
 # Globals for debuggin purposes
 our $DEBUG        = 0;
@@ -12,9 +13,9 @@ our $SAVE_RAW_TCL = 0;
 
 # Globals for path matching
 our $PATH_MATCH_PREFIX = '[^ /]+';
-our $PATH_MATCH_BD     = '\.srcs/[^ /]+/bd/([^ /]+)/\1.bd';
+our $PATH_MATCH_BD     = '\.srcs/[^ /]+/bd/([^ /]+)/\1\.bd';
 our $PATH_MATCH_BD_WRAPPER
-  = '!\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?';
+  = '\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?';
 
 # Get the Vivado version from user supplied RepoVivadoVersion file
 open( RVV, '<', 'RepoVivadoVersion' );
@@ -86,7 +87,7 @@ for my $ProjectPath ( glob("workspace/*/*.xpr") ) {
 
     # Write the main TCL design, no block designs included.
     # This goes to an intermediate file to process later.
-    printf VIVADO "write_project_tcl -force \".exported.tcl\"\n";
+    printf VIVADO "write_project_tcl -use_bd_files -force \".exported.tcl\"\n";
 
     # Loop through the block designs and write them out.
     # These go directly to the BD directory
@@ -317,6 +318,8 @@ sub process_tcl {
         my $KeepLine       = 1;
         my $PathSubstitute = 1;
         chomp $Line;
+        $Line =~ s/\s*$//;    # Trim spaces from end of line
+        my $LineBefore = $Line;
 
         if ( $InitialComments ... ( $Line =~ /^(?!#)/ ) ) {
 
@@ -332,9 +335,9 @@ sub process_tcl {
         if ( $Line =~ /^set orig_proj_dir / ) {
 
             # Point the project directory to the sources directory
-            $Line
-              = sprintf( 'set orig_proj_dir "[file normalize "sources/%s"]"',
-                         $ProjectCanonicalName );
+            $Line =
+              sprintf( 'set orig_proj_dir "[file normalize "sources/%s"]"',
+                       $ProjectCanonicalName );
         }
 
         if ( $Line =~ /^create_project / ) {
@@ -342,6 +345,9 @@ sub process_tcl {
             # When the TCL file runs, create the project back in the workspace direcotry
             $Line = sprintf( 'create_project %s workspace/%s',
                              $ProjectCanonicalName, $ProjectCanonicalName );
+	    if ( $LineBefore =~ /(-part \S+)/ ) {
+                $Line .= " $1";
+            }
         }
 
         if ( $Line =~ /^set obj \[get_projects \S+\]/ ) {
@@ -364,7 +370,10 @@ sub process_tcl {
                 my $File    = get_path( cygwin_abs_path($RawFile),
                                      1, $ProjectCanonicalName, 0, undef );
 
-                if ( $File =~ m!${PATH_MATCH_BD}\$! ) {
+                printf( "~~~~~~ TCL important file: %s\n", $File ) if $DEBUG;
+                if ( $File =~ m!${PATH_MATCH_BD}$! ) {
+                    printf("~~~~~~~~    Matched bd pattern, discarding\n")
+                      if $DEBUG;
                     push @{ $MESSAGES{$ProjectCanonicalName} },
                       { Line     => __LINE__,
                         Hazard   => 0,
@@ -374,8 +383,12 @@ sub process_tcl {
                             "Discarding source file (Block Designs exported separately): %s",
                             $File )
                       };
-                }
-                elsif ( $File =~ m!${PATH_MATCH_BD_WRAPPER}\$! ) {
+                } ## end if ( $File =~ m!${PATH_MATCH_BD}$!)
+                elsif ( $File =~ m!${PATH_MATCH_BD_WRAPPER}$! ) {
+
+                    # Block diagram wrapper file. We are going to recreate it. Skip it.
+                    printf("~~~~~~~~    Matched _wrapper, discarding\n")
+                      if $DEBUG;
                     push @{ $MESSAGES{$ProjectCanonicalName} },
                       { Line     => __LINE__,
                         Hazard   => 0,
@@ -388,7 +401,7 @@ sub process_tcl {
                     push @Discarded_BD_Wrappers,
                       $1;    # Save the name so we know what to recreate
                     $SourcesIndex{ cygwin_abs_path($File) } = undef;
-                } ## end elsif ( $File =~ m!${PATH_MATCH_BD_WRAPPER}\$!)
+                } ## end elsif ( $File =~ m!${PATH_MATCH_BD_WRAPPER}$!)
                 else {
                     my $Target =
                       get_path( $RawFile, 1, $ProjectCanonicalName, 1,
@@ -425,7 +438,15 @@ sub process_tcl {
                             my $TargetDir = $Target;
                             $TargetDir =~ s#/[^/]+$##;
                             system( 'mkdir', '-p', '--', $TargetDir );
-                            system( 'cp', '-a', '--', $File, $Target );
+                            system( 'cp',
+                                    '--force',
+                                    '--no-dereference',
+                                    '--preserve=ownership,timestamp,links',
+                                    '--',
+                                    $File,
+                                    $Target
+                                  );
+
                             push @{ $MESSAGES{$ProjectCanonicalName} },
                               { Line     => __LINE__,
                                 Hazard   => 0,
@@ -448,7 +469,7 @@ sub process_tcl {
                         $SourcesIndex{$File}   = $Target;
                         $TargetsIndex{$Target} = $File;
                     } ## end else [ if ( !-e $File ) ]
-                } ## end else [ if ( $File =~ m!${PATH_MATCH_BD}\$!)]
+                } ## end else [ if ( $File =~ m!${PATH_MATCH_BD}$!)]
             } ## end if ( $Line =~ /^#\s+\"(.*)\"\r?$/)
         } ## end if ( ( $FileListing ==...))
 
@@ -544,13 +565,10 @@ sub process_tcl {
             $Current_SetFile = undef;
         }
 
-        if ( $Line
-            =~ m!^set file ".*\.srcs/[^ /]+/bd/([^ /]+)/hdl/\1_wrapper\.v(?:hd)?"$!
-           )
-        {
+        if ( $Line =~ m!^set file ".*{PATH_MATCH_BD_WRAPPER}"$! ) {
             $FileProperty_Disarm = 1;    # Property block is to be discarded.
         }
-        if ( $Line =~ m!^set file ".*\.srcs/[^ /]+/bd/([^ /]+)/\1\.bd"$! ) {
+        if ( $Line =~ m!^set file ".*${PATH_MATCH_BD}"$! ) {
             $FileProperty_Disarm = 1;    # Property block is to be discarded.
         }
         if ($FileProperty_Disarm) {
@@ -568,8 +586,8 @@ sub process_tcl {
         elsif ( $Line
             =~ /^set file_imported \[import_files -fileset (\S+) \$file\]$/ )
         {
-            $Line
-              = sprintf(
+            $Line =
+              sprintf(
                     "add_files -norecurse -fileset [get_filesets %s] \$file",
                     $1 );
         }
@@ -677,8 +695,8 @@ sub process_tcl {
                )
             {
                 if ( -e "sources/$ProjectCanonicalName/$3" ) {
-                    $Line
-                      = sprintf(
+                    $Line =
+                      sprintf(
                         'set_property "steps.%s.tcl.%s" "[file normalize "sources/%s/%s"]" $obj',
                         $1, $2, $ProjectCanonicalName, $3 );
                 }
@@ -731,7 +749,8 @@ sub process_tcl {
         } ## end if ( $WSPath ne $ComponentPath...)
 
         process_componentxml( $ComponentXML, '.component.xml',
-                     $ProjectCanonicalName, $ComponentPath, \%TargetsIndex );
+                              $ProjectCanonicalName, $ComponentPath,
+                              \%TargetsIndex );
         rename( '.component.xml', $ComponentXML );
         unlink('.component.xml');
     } ## end while ( my $ComponentXML ...)
@@ -850,7 +869,10 @@ sub get_path {
 
     my $OrigPath = $Path;
     $Path = _get_path_update_for_xcix($Path) if defined($Path);
-    $Path = abs_path($Path);
+    eval { $Path = abs_path($Path); } or do {
+        $Path = File::Spec->rel2abs($Path);
+    };
+
     printf( " ==> out %s\n", $Path ) if $DEBUG;
     if ( !defined($Path) || !-e ($Path) ) {
         if ( defined $SourcesIndex ) {
